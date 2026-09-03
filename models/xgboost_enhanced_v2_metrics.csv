@@ -1,0 +1,2 @@
+Model,Features,History_Minutes,Forecast_Minutes,Threshold,Validation_Accuracy,Validation_Precision,Validation_Recall,Validation_F1,Validation_ROC_AUC,Validation_PR_AUC,Test_Accuracy,Test_Precision,Test_Recall,Test_F1,Test_ROC_AUC,Test_PR_AUC,Best_Iteration
+Enhanced XGBoost V2,161,10,15,0.2,0.7702702702702703,0.8253968253968254,0.896551724137931,0.859504132231405,0.744342672413793,0.9246539979784248,0.9415584415584416,0.8767123287671232,1.0,0.9343065693430657,0.9984375,0.9977748057911553,
