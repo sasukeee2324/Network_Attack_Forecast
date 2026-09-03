@@ -1,23 +1,27 @@
-from pathlib import Path
+from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+from fastapi.testclient import TestClient
 
 from .config import (
     DATA_DIR,
-    HISTORY_MINUTES,
     FEATURE_COUNT,
+    FORECAST_HORIZON_MINUTES,
+    HISTORY_MINUTES,
+    MODEL_FILE,
+    MODEL_THRESHOLD,
 )
 from .feature_pipeline import (
-    generate_enhanced_features,
     create_model_window,
+    generate_enhanced_features,
 )
-from .predictor import (
-    NetworkAttackPredictor,
-)
+from .main import app
+from .predictor import NetworkAttackPredictor
 
 
 # ============================================================
-# INPUT DATA
+# TEST INPUT
 # ============================================================
 
 INPUT_FILE = (
@@ -28,60 +32,38 @@ INPUT_FILE = (
 
 
 # ============================================================
-# MAIN
+# API TEST CLIENT
 # ============================================================
 
-def main():
+client = TestClient(app)
 
-    print("=" * 80)
-    print("NETWORK ATTACK FORECASTING - INFERENCE TEST")
-    print("=" * 80)
 
-    # --------------------------------------------------------
-    # CHECK INPUT
-    # --------------------------------------------------------
+# ============================================================
+# TEST HELPERS
+# ============================================================
 
-    if not INPUT_FILE.exists():
-        raise FileNotFoundError(
-            f"\nNetwork-state file not found:\n"
-            f"{INPUT_FILE}"
-        )
+def load_test_window() -> np.ndarray:
+    """
+    Load the canonical temporal network-state dataset,
+    generate the enhanced features, select one source,
+    and create the final inference window.
+    """
 
-    print(
-        f"\nInput file:\n{INPUT_FILE}"
+    assert INPUT_FILE.exists(), (
+        f"Network-state file not found: {INPUT_FILE}"
     )
-
-    # --------------------------------------------------------
-    # LOAD NETWORK STATES
-    # --------------------------------------------------------
 
     df = pd.read_csv(INPUT_FILE)
 
-    print(
-        f"Network states loaded: "
-        f"{len(df):,}"
+    assert len(df) >= HISTORY_MINUTES, (
+        f"Expected at least {HISTORY_MINUTES} rows, "
+        f"got {len(df)}"
     )
 
-    # --------------------------------------------------------
-    # GENERATE ENHANCED FEATURES
-    # --------------------------------------------------------
+    enhanced_df = generate_enhanced_features(df)
 
-    print(
-        "\nGenerating enhanced temporal features..."
-    )
-
-    enhanced_df = (
-        generate_enhanced_features(df)
-    )
-
-    print(
-        f"Enhanced dataset shape: "
-        f"{enhanced_df.shape}"
-    )
-
-    # --------------------------------------------------------
-    # SELECT ONE SOURCE
-    # --------------------------------------------------------
+    assert "Source_File" in enhanced_df.columns
+    assert "Minute" in enhanced_df.columns
 
     sources = (
         enhanced_df["Source_File"]
@@ -89,136 +71,317 @@ def main():
         .unique()
     )
 
-    if len(sources) == 0:
-        raise RuntimeError(
-            "No Source_File values found."
-        )
-
-    source = sources[0]
+    assert len(sources) > 0, (
+        "No Source_File values found."
+    )
 
     source_df = (
         enhanced_df[
-            enhanced_df["Source_File"] == source
+            enhanced_df["Source_File"] == sources[0]
         ]
         .sort_values("Minute")
         .reset_index(drop=True)
     )
 
-    print(
-        f"\nUsing source:\n{source}"
+    assert len(source_df) >= HISTORY_MINUTES, (
+        "Not enough states for a model window."
     )
 
-    print(
-        f"Available states: "
-        f"{len(source_df)}"
+    window = create_model_window(source_df)
+
+    return window
+
+
+# ============================================================
+# MODEL FILE TESTS
+# ============================================================
+
+def test_model_file_exists():
+    """The configured XGBoost model file must exist."""
+
+    assert MODEL_FILE.exists(), (
+        f"Model file not found: {MODEL_FILE}"
     )
 
-    # --------------------------------------------------------
-    # CREATE 10-MINUTE WINDOW
-    # --------------------------------------------------------
 
-    if len(source_df) < HISTORY_MINUTES:
-        raise RuntimeError(
-            "Not enough states for "
-            "a 10-minute window."
-        )
+def test_predictor_loads_model():
+    """The forecasting predictor must load successfully."""
 
-    window = create_model_window(
-        source_df
+    predictor = NetworkAttackPredictor()
+
+    info = predictor.check_model()
+
+    assert info["loaded"] is True
+    assert info["model_type"] == "XGBoost"
+    assert info["feature_count"] == FEATURE_COUNT
+    assert info["flattened_feature_count"] == (
+        HISTORY_MINUTES * FEATURE_COUNT
     )
-
-    print(
-        f"\nModel window shape: "
-        f"{window.shape}"
+    assert info["history_minutes"] == HISTORY_MINUTES
+    assert info["forecast_horizon_minutes"] == (
+        FORECAST_HORIZON_MINUTES
     )
+    assert info["decision_threshold"] == MODEL_THRESHOLD
 
-    if window.shape != (
+
+# ============================================================
+# FEATURE / WINDOW TESTS
+# ============================================================
+
+def test_model_window_shape():
+    """The inference window must have the expected shape."""
+
+    window = load_test_window()
+
+    assert isinstance(window, np.ndarray)
+
+    assert window.shape == (
         HISTORY_MINUTES,
         FEATURE_COUNT,
-    ):
-        raise RuntimeError(
-            f"Unexpected window shape: "
-            f"{window.shape}"
-        )
-
-    print(
-        "Window validation: PASSED"
-    )
-
-    # --------------------------------------------------------
-    # LOAD PREDICTOR
-    # --------------------------------------------------------
-
-    print(
-        "\nLoading forecasting model..."
-    )
-
-    predictor = (
-        NetworkAttackPredictor()
-    )
-
-    print(
-        "Model loading: PASSED"
-    )
-
-    # --------------------------------------------------------
-    # PREDICT
-    # --------------------------------------------------------
-
-    print(
-        "\nGenerating forecast..."
-    )
-
-    result = predictor.predict(
-        window
-    )
-
-    # --------------------------------------------------------
-    # DISPLAY
-    # --------------------------------------------------------
-
-    print(
-        "\n" + "=" * 80
-    )
-
-    print(
-        "FORECAST RESULT"
-    )
-
-    print(
-        "=" * 80
-    )
-
-    for key, value in result.items():
-
-        if isinstance(value, float):
-
-            print(
-                f"{key}: "
-                f"{value:.6f}"
-            )
-
-        else:
-
-            print(
-                f"{key}: "
-                f"{value}"
-            )
-
-    print(
-        "\n" + "=" * 80
-    )
-
-    print(
-        "INFERENCE TEST PASSED"
-    )
-
-    print(
-        "=" * 80
     )
 
 
-if __name__ == "__main__":
-    import pandas as pd
+def test_model_window_is_finite():
+    """The final inference window must contain finite values."""
 
-    main()
+    window = load_test_window()
+
+    assert np.isfinite(window).all()
+
+
+# ============================================================
+# PREDICTION TESTS
+# ============================================================
+
+def test_prediction_returns_expected_fields():
+    """The predictor must return all required forecast fields."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    expected_fields = {
+        "forecast_horizon_minutes",
+        "attack_probability",
+        "predicted_attack",
+        "decision_threshold",
+        "risk_level",
+    }
+
+    assert expected_fields.issubset(result.keys())
+
+
+def test_prediction_probability_is_valid():
+    """Attack probability must be between 0 and 1."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    probability = result["attack_probability"]
+
+    assert isinstance(probability, float)
+    assert 0.0 <= probability <= 1.0
+
+
+def test_prediction_threshold_is_correct():
+    """The configured decision threshold must be returned."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    assert result["decision_threshold"] == MODEL_THRESHOLD
+
+
+def test_prediction_horizon_is_correct():
+    """The configured forecast horizon must be returned."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    assert result["forecast_horizon_minutes"] == (
+        FORECAST_HORIZON_MINUTES
+    )
+
+
+def test_prediction_is_boolean():
+    """The attack prediction must be a boolean."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    assert isinstance(
+        result["predicted_attack"],
+        bool,
+    )
+
+
+def test_risk_level_is_valid():
+    """The predictor must return a recognized risk level."""
+
+    predictor = NetworkAttackPredictor()
+    window = load_test_window()
+
+    result = predictor.predict(window)
+
+    valid_levels = {
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL",
+    }
+
+    assert result["risk_level"] in valid_levels
+
+
+# ============================================================
+# FASTAPI ROOT TEST
+# ============================================================
+
+def test_api_root():
+    """The root endpoint must report the API as online."""
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["name"] == "Network Attack Forecasting API"
+    assert data["version"] == "1.0.0"
+    assert data["status"] == "online"
+    assert data["history_minutes"] == HISTORY_MINUTES
+    assert data["forecast_horizon_minutes"] == (
+        FORECAST_HORIZON_MINUTES
+    )
+    assert data["model_feature_count"] == FEATURE_COUNT
+
+
+# ============================================================
+# FASTAPI HEALTH TEST
+# ============================================================
+
+def test_api_health():
+    """The health endpoint must confirm the model is loaded."""
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["status"] == "healthy"
+
+    model = data["model"]
+
+    assert model["loaded"] is True
+    assert model["model_type"] == "XGBoost"
+    assert model["feature_count"] == FEATURE_COUNT
+    assert model["flattened_feature_count"] == (
+        HISTORY_MINUTES * FEATURE_COUNT
+    )
+
+
+# ============================================================
+# FASTAPI MODEL INFORMATION TEST
+# ============================================================
+
+def test_api_model_information():
+    """The model endpoint must expose the expected configuration."""
+
+    response = client.get("/model")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["loaded"] is True
+    assert data["model_type"] == "XGBoost"
+    assert data["feature_count"] == FEATURE_COUNT
+    assert data["flattened_feature_count"] == (
+        HISTORY_MINUTES * FEATURE_COUNT
+    )
+    assert data["history_minutes"] == HISTORY_MINUTES
+    assert data["forecast_horizon_minutes"] == (
+        FORECAST_HORIZON_MINUTES
+    )
+    assert data["decision_threshold"] == MODEL_THRESHOLD
+
+
+# ============================================================
+# FASTAPI FORECAST TEST
+# ============================================================
+
+def test_api_forecast():
+    """
+    The complete forecast endpoint must process the
+    network-state CSV and return a valid prediction.
+    """
+
+    response = client.post(
+        "/forecast",
+        json={
+            "file_path": str(INPUT_FILE),
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["forecast_horizon_minutes"] == (
+        FORECAST_HORIZON_MINUTES
+    )
+
+    assert 0.0 <= data["attack_probability"] <= 1.0
+
+    assert isinstance(
+        data["predicted_attack"],
+        bool,
+    )
+
+    assert data["decision_threshold"] == MODEL_THRESHOLD
+
+    assert data["risk_level"] in {
+        "MINIMAL",
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL",
+    }
+
+
+# ============================================================
+# FASTAPI ERROR TEST
+# ============================================================
+
+def test_api_forecast_missing_file():
+    """The forecast endpoint must reject a missing input file."""
+
+    missing_file = (
+        DATA_DIR
+        / "temporal"
+        / "does_not_exist.csv"
+    )
+
+    response = client.post(
+        "/forecast",
+        json={
+            "file_path": str(missing_file),
+        },
+    )
+
+    assert response.status_code == 404
+
+    data = response.json()
+
+    assert "Input file not found" in data["detail"]
